@@ -70,10 +70,21 @@ def save_curated(words: set[str] | list[str], path: str | Path,
 
 
 def apply_edits(counts: Counter, remove: set[str] = frozenset(),
-                add: set[str] = frozenset()) -> Counter:
-    """Return a new Counter with `remove` dropped and `add` inserted (count=0
-    if not already present, so newly added words are visibly distinct)."""
+                add: set[str] = frozenset(),
+                merges: dict[str, str] | None = None) -> Counter:
+    """Return a new Counter after removing, adding, and merging words.
+
+    merges: {source_word: target_word}. Every source's count is folded into
+    target (target need not already exist). A word can be both a merge
+    source and separately in `remove`/`add`; merges are applied first, then
+    remove, then add, so `add` always wins and survives a same-named removal.
+    """
     out = Counter(counts)
+    for src, tgt in (merges or {}).items():
+        src, tgt = src.upper(), tgt.upper()
+        if src == tgt or src not in out:
+            continue
+        out[tgt] = out.get(tgt, 0) + out.pop(src)
     for w in remove:
         out.pop(w.upper(), None)
     for w in add:
@@ -81,3 +92,52 @@ def apply_edits(counts: Counter, remove: set[str] = frozenset(),
         if w not in out:
             out[w] = 0
     return out
+
+
+def merge_words(counts: Counter, source: str, target: str) -> Counter:
+    """Merge `source` into `target`, keeping `target` as the canonical name
+    and summing both counts. `source` disappears from the result."""
+    return apply_edits(counts, merges={source: target})
+
+
+def filter_min_count(counts: Counter, min_count: int) -> Counter:
+    """Keep only words occurring at least `min_count` times."""
+    return Counter({w: n for w, n in counts.items() if n >= min_count})
+
+
+# ----------------------------------------------------------------------------
+# Edit-log persistence (so curation survives a re-extraction of the source CSV)
+# ----------------------------------------------------------------------------
+
+def save_edit_log(path: str | Path, remove: set[str] = frozenset(),
+                  add: set[str] = frozenset(),
+                  merges: dict[str, str] | None = None,
+                  min_count: int = 1) -> Path:
+    """Save the edit operations themselves (not just the resulting word
+    list), so the same curation can be re-applied after re-extracting words
+    from an updated CSV."""
+    p = Path(path)
+    payload = {
+        "remove": sorted(w.upper() for w in remove),
+        "add": sorted(w.upper() for w in add),
+        "merges": {k.upper(): v.upper() for k, v in (merges or {}).items()},
+        "min_count": min_count,
+    }
+    p.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def load_edit_log(path: str | Path) -> dict:
+    p = Path(path)
+    if not p.exists():
+        return {"remove": [], "add": [], "merges": {}, "min_count": 1}
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def apply_edit_log(counts: Counter, log: dict) -> Counter:
+    """Apply a saved edit log (merges -> remove -> add -> min_count filter)
+    to a freshly extracted Counter."""
+    out = apply_edits(counts, remove=set(log.get("remove", [])),
+                      add=set(log.get("add", [])),
+                      merges=log.get("merges", {}))
+    return filter_min_count(out, log.get("min_count", 1))
