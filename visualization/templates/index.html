@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Live Word Counts</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<style>
+  :root{
+    --bg-1:#0f0c29;
+    --bg-2:#302b63;
+    --bg-3:#24243e;
+    --card-bg: rgba(255,255,255,0.06);
+    --card-border: rgba(255,255,255,0.12);
+    --text: #f2f2f7;
+    --sub: #a9a9c7;
+    --accent: #7f5af0;
+    --accent2: #2cb67d;
+    --danger:#ef4565;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    min-height:100vh;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background: linear-gradient(135deg, var(--bg-1), var(--bg-2) 50%, var(--bg-3));
+    background-size: 200% 200%;
+    animation: bgShift 18s ease infinite;
+    color: var(--text);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding: 40px 20px 80px;
+  }
+  @keyframes bgShift{
+    0%{background-position:0% 50%;}
+    50%{background-position:100% 50%;}
+    100%{background-position:0% 50%;}
+  }
+  header{
+    text-align:center;
+    margin-bottom: 28px;
+  }
+  h1{
+    font-size: clamp(1.8rem, 4vw, 2.6rem);
+    margin: 0 0 8px;
+    font-weight: 700;
+    letter-spacing:-0.5px;
+    background: linear-gradient(90deg, #7f5af0, #2cb67d);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .status{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    color: var(--sub);
+    font-size:0.95rem;
+  }
+  .dot{
+    width:9px;height:9px;border-radius:50%;
+    background: var(--accent2);
+    box-shadow: 0 0 8px var(--accent2);
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+  .dot.offline{ background: var(--danger); box-shadow:0 0 8px var(--danger); animation:none; }
+  @keyframes pulse{
+    0%,100%{opacity:1; transform:scale(1);}
+    50%{opacity:0.4; transform:scale(0.75);}
+  }
+
+  .card{
+    width:100%;
+    max-width: 960px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 20px;
+    padding: 28px;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+  }
+
+  .stats{
+    display:flex;
+    gap:16px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+  }
+  .stat{
+    flex:1;
+    min-width: 140px;
+    background: rgba(255,255,255,0.05);
+    border:1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 14px 18px;
+  }
+  .stat .label{ font-size:0.78rem; color:var(--sub); text-transform:uppercase; letter-spacing:0.06em;}
+  .stat .value{ font-size:1.5rem; font-weight:700; margin-top:4px;}
+
+  .chart-wrap{
+    position: relative;
+    height: 440px;
+    padding: 10px 4px 0;
+  }
+
+  footer{
+    margin-top: 26px;
+    color: var(--sub);
+    font-size: 0.85rem;
+    text-align:center;
+    max-width: 600px;
+    line-height:1.5;
+  }
+  code{
+    background: rgba(255,255,255,0.08);
+    padding: 2px 6px;
+    border-radius: 6px;
+  }
+
+  .error-banner{
+    display:none;
+    max-width:960px;
+    width:100%;
+    background: rgba(239,69,101,0.15);
+    border:1px solid var(--danger);
+    color:#ffd4dc;
+    padding:12px 18px;
+    border-radius: 12px;
+    margin-bottom: 16px;
+    font-size:0.9rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Live Word Counts</h1>
+  <div class="status">
+    <span class="dot" id="statusDot"></span>
+    <span id="statusText">Connecting…</span>
+  </div>
+</header>
+
+<div class="error-banner" id="errorBanner"></div>
+
+<div class="card">
+  <div class="stats">
+    <div class="stat">
+      <div class="label">Total entries</div>
+      <div class="value" id="statCount">–</div>
+    </div>
+    <div class="stat">
+      <div class="label">Total count</div>
+      <div class="value" id="statTotal">–</div>
+    </div>
+    <div class="stat">
+      <div class="label">Top word</div>
+      <div class="value" id="statTop">–</div>
+    </div>
+    <div class="stat">
+      <div class="label">Last updated</div>
+      <div class="value" id="statUpdated">–</div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <canvas id="barChart"></canvas>
+  </div>
+</div>
+
+<footer>
+  Edit and save <code>data.csv</code> in the project folder — this chart updates instantly, no refresh needed.
+</footer>
+
+<script>
+// Distinct, high-contrast palette (no two adjacent colors look alike)
+const palette = ['#7f5af0','#2cb67d','#ff8906','#3da9fc','#e53170','#ffd803','#f25f4c','#00e0a4','#c77dff'];
+
+function fmt(n){ return Number(n).toLocaleString(); }
+
+const ctx = document.getElementById('barChart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'bar',
+  data: {
+    labels: [],
+    datasets: [{
+      label: 'Count',
+      data: [],
+      backgroundColor: [],
+      borderRadius: 8,
+      borderSkipped: false,
+      barPercentage: 0.6,      // width of each bar within its slot
+      categoryPercentage: 0.7  // space between groups/labels
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 700, easing: 'easeOutQuart' },
+    layout: { padding: { top: 10 } },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: 'rgba(20,18,40,0.95)',
+        titleColor: '#fff',
+        bodyColor: '#e5e5f0',
+        borderColor: 'rgba(255,255,255,0.15)',
+        borderWidth: 1,
+        padding: 12,
+        cornerRadius: 10,
+        displayColors: false,
+        callbacks: {
+          label: (c) => `Count: ${c.parsed.y.toLocaleString()}`
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { color: '#d3d3ea', font: { size: 13, weight: '600' } }
+      },
+      y: {
+        beginAtZero: true,
+        grid: { color: 'rgba(255,255,255,0.09)' },
+        ticks: { color: '#a9a9c7' }
+      }
+    }
+  }
+});
+
+function renderData(payload){
+  const { words, counts, total, updated_at } = payload;
+
+  chart.data.labels = words;
+  chart.data.datasets[0].data = counts;
+  chart.data.datasets[0].backgroundColor = words.map((_, i) => palette[i % palette.length]);
+  chart.update();
+
+  document.getElementById('statCount').textContent = words.length;
+  document.getElementById('statTotal').textContent = fmt(total);
+  document.getElementById('statTop').textContent = words.length ? words[0] : '–';
+  document.getElementById('statUpdated').textContent = updated_at;
+
+  document.getElementById('errorBanner').style.display = 'none';
+}
+
+function showError(msg){
+  const banner = document.getElementById('errorBanner');
+  banner.textContent = 'CSV error: ' + msg;
+  banner.style.display = 'block';
+}
+
+const socket = io();
+
+socket.on('connect', () => {
+  document.getElementById('statusDot').classList.remove('offline');
+  document.getElementById('statusText').textContent = 'Live — watching data.csv';
+});
+
+socket.on('disconnect', () => {
+  document.getElementById('statusDot').classList.add('offline');
+  document.getElementById('statusText').textContent = 'Disconnected — trying to reconnect…';
+});
+
+socket.on('csv_update', renderData);
+socket.on('csv_error', (d) => showError(d.error));
+</script>
+
+</body>
+</html>
