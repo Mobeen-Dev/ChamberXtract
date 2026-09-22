@@ -19,6 +19,7 @@ from cluster_core import (
     cluster_summary,
     cluster_word_table,
     word_counts,
+    word_counts_min_freq,
 )
 
 st.set_page_config(page_title="Company-name clustering", layout="wide")
@@ -119,7 +120,7 @@ def run(_df: pd.DataFrame, col: str, cfg_key: tuple, top_n: int):
         res.silhouette,
         res.notes,
         cluster_summary(res, col),
-        cluster_word_table(res, max(top_n, 30)),
+        cluster_word_table(res, top_n),
     )
 
 
@@ -140,12 +141,14 @@ for n in notes:
 
 
 def hbar(data: pd.DataFrame, title: str):
+    data = data.drop_duplicates(subset=["word"]).reset_index(drop=True)
+    order = data["word"].tolist()
     return (
         alt.Chart(data, title=title)
         .mark_bar()
         .encode(
             x=alt.X("count:Q", title="Frequency"),
-            y=alt.Y("word:N", sort="-x", title=None),
+            y=alt.Y("word:N", sort=order, title=None, scale=alt.Scale(domain=order)),
             tooltip=["word", "count"],
         )
         .properties(height=28 * max(len(data), 1))
@@ -153,8 +156,15 @@ def hbar(data: pd.DataFrame, title: str):
 
 
 st.subheader("Overall dataset - top words")
-overall = word_counts(out_df["_normalized"], top_n)
-st.altair_chart(hbar(overall, f"All {len(out_df):,} names"), width="stretch")
+min_freq = st.slider("Minimum word frequency", 1, 100, 20)
+overall = word_counts_min_freq(out_df["_normalized"], min_freq)
+
+if overall.empty:
+    st.info(f"No words appear more than {min_freq} times.")
+else:
+    st.altair_chart(
+        hbar(overall, f"All {len(out_df):,} names (freq > {min_freq})"), width="stretch"
+    )
 
 st.subheader("Clusters")
 st.dataframe(summary, width="stretch", hide_index=True)

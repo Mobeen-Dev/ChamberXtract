@@ -23,8 +23,33 @@ from sklearn.metrics import silhouette_score
 # Legal-form and boilerplate tokens: removed before clustering so that
 # "X (PVT) LTD" and "X INDUSTRIES" are not pulled together by their suffix.
 LEGAL_TOKENS = {
-    ")", "(","-", "AL-","AL ", "(PVT.)","(SMC-PVT)", "(PVT)", "PVT", "PVT.", "PRIVATE", "LTD.","LTD", "LIMITED", "LIMTED", "SMC", "CO", "COMPANY",
-    "INC", "CORP", "CORPORATION", "LLC", "LLP", "PLC", "AND", "THE", "OF",
+    ")",
+    "(",
+    "-",
+    "AL-",
+    "AL ",
+    "(PVT.)",
+    "(SMC-PVT)",
+    "(PVT)",
+    "PVT",
+    "PVT.",
+    "PRIVATE",
+    "LTD.",
+    "LTD",
+    "LIMITED",
+    "LIMTED",
+    "SMC",
+    "CO",
+    "COMPANY",
+    "INC",
+    "CORP",
+    "CORPORATION",
+    "LLC",
+    "LLP",
+    "PLC",
+    "AND",
+    "THE",
+    "OF",
 }
 # Tokens that are location noise in this dataset; editable from the UI.
 DEFAULT_STOPWORDS = {"LAHORE", "PAKISTAN", "PUNJAB"}
@@ -44,31 +69,49 @@ def normalize(name: str, stopwords: set[str], drop_legal: bool = True) -> str:
     return " ".join(toks)
 
 
+def word_counts(series: pd.Series, top_n: int = 10) -> pd.DataFrame:
+    c = Counter()
+    for s in series.dropna():
+        c.update(t for t in str(s).split() if t)
+    return pd.DataFrame(c.most_common(top_n), columns=["word", "count"])
+
+
+def word_counts_min_freq(series: pd.Series, min_count: int = 20) -> pd.DataFrame:
+    """All words with frequency > min_count, sorted descending. No fixed cap."""
+    c = Counter()
+    for s in series.dropna():
+        c.update(t for t in str(s).split() if t)
+    items = [(w, n) for w, n in c.items() if n > min_count]
+    items.sort(key=lambda x: x[1], reverse=True)
+    return pd.DataFrame(items, columns=["word", "count"])
+
+
 # ---------------------------------------------------------------------------
 # Clustering
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ClusterConfig:
-    analyzer: str = "char_wb"       # "char_wb" (typo-tolerant) or "word"
+    analyzer: str = "char_wb"  # "char_wb" (typo-tolerant) or "word"
     ngram_min: int = 3
     ngram_max: int = 4
     min_df: int = 1
     max_features: int = 50_000
-    method: str = "agglomerative"   # "agglomerative" | "kmeans"
-    distance_threshold: float = 0.75   # agglomerative, cosine distance 0..1
-    n_clusters: int | None = None      # kmeans, or agglomerative override
+    method: str = "agglomerative"  # "agglomerative" | "kmeans"
+    distance_threshold: float = 0.75  # agglomerative, cosine distance 0..1
+    n_clusters: int | None = None  # kmeans, or agglomerative override
     drop_legal: bool = True
     stopwords: tuple = tuple(sorted(DEFAULT_STOPWORDS))
-    auto_switch_rows: int = 8_000   # above this, agglomerative -> kmeans
+    auto_switch_rows: int = 8_000  # above this, agglomerative -> kmeans
 
 
 @dataclass
 class ClusterResult:
-    df: pd.DataFrame                # original rows + _normalized + cluster_id
+    df: pd.DataFrame  # original rows + _normalized + cluster_id
     labels: np.ndarray
     vectorizer: TfidfVectorizer
-    matrix: object                  # sparse TF-IDF matrix
+    matrix: object  # sparse TF-IDF matrix
     method_used: str
     n_clusters: int
     silhouette: float | None
@@ -94,7 +137,9 @@ def cluster(df: pd.DataFrame, column: str, cfg: ClusterConfig) -> ClusterResult:
 
     usable = work["_normalized"].str.len() > 0
     if (~usable).any():
-        notes.append(f"{(~usable).sum()} row(s) empty after normalisation -> cluster_id = -1")
+        notes.append(
+            f"{(~usable).sum()} row(s) empty after normalisation -> cluster_id = -1"
+        )
 
     texts = work.loc[usable, "_normalized"].tolist()
     if not texts:
@@ -129,7 +174,7 @@ def cluster(df: pd.DataFrame, column: str, cfg: ClusterConfig) -> ClusterResult:
     n_found = len(set(labels))
     if 1 < n_found < len(texts):
         idx = np.arange(len(texts))
-        if len(idx) > 5000:                       # subsample: silhouette is O(n^2)
+        if len(idx) > 5000:  # subsample: silhouette is O(n^2)
             idx = np.random.default_rng(0).choice(idx, 5000, replace=False)
         sil = float(silhouette_score(X[idx], labels[idx], metric="cosine"))
 
@@ -148,6 +193,7 @@ def cluster(df: pd.DataFrame, column: str, cfg: ClusterConfig) -> ClusterResult:
 # Word frequency
 # ---------------------------------------------------------------------------
 
+
 def word_counts(series: pd.Series, top_n: int = 10) -> pd.DataFrame:
     c = Counter()
     for s in series.dropna():
@@ -161,20 +207,31 @@ def cluster_word_table(res: ClusterResult, top_n: int = 10) -> pd.DataFrame:
     for cid, grp in res.df[res.df.cluster_id >= 0].groupby("cluster_id"):
         wc = word_counts(grp["_normalized"], top_n)
         for rank, (w, n) in enumerate(zip(wc["word"], wc["count"]), start=1):
-            rows.append({"cluster_id": cid, "size": len(grp), "rank": rank,
-                         "word": w, "count": int(n)})
+            rows.append(
+                {
+                    "cluster_id": cid,
+                    "size": len(grp),
+                    "rank": rank,
+                    "word": w,
+                    "count": int(n),
+                }
+            )
     return pd.DataFrame(rows)
 
 
-def cluster_summary(res: ClusterResult, column: str, label_words: int = 3) -> pd.DataFrame:
+def cluster_summary(
+    res: ClusterResult, column: str, label_words: int = 3
+) -> pd.DataFrame:
     """One row per cluster: size, auto label from its top words, 3 examples."""
     rows = []
     for cid, grp in res.df[res.df.cluster_id >= 0].groupby("cluster_id"):
         top = word_counts(grp["_normalized"], label_words)["word"].tolist()
-        rows.append({
-            "cluster_id": cid,
-            "size": len(grp),
-            "label": " / ".join(top) if top else "(unlabelled)",
-            "examples": " | ".join(grp[column].astype(str).head(3)),
-        })
+        rows.append(
+            {
+                "cluster_id": cid,
+                "size": len(grp),
+                "label": " / ".join(top) if top else "(unlabelled)",
+                "examples": " | ".join(grp[column].astype(str).head(3)),
+            }
+        )
     return pd.DataFrame(rows).sort_values("size", ascending=False, ignore_index=True)
